@@ -1,63 +1,32 @@
 #!/usr/bin/env python3
 """
 ╔══════════════════════════════════════════╗
-║   UMBREONPAY — API UNIFICADA             ║
-║   Flask + PostgreSQL (Supabase)          ║
-║   Banco persistente 24/7                 ║
+║   UMBREONPAY — API UNIFICADA v3.0        ║
+║   Flask + PostgreSQL + Monero RPC        ║
+║   Transações cripto reais                ║
 ╚══════════════════════════════════════════╝
 """
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import psycopg2, hashlib, secrets, os
+import psycopg2, hashlib, secrets, os, random
 from datetime import datetime
+from monero_service import MoneroService
 
 app = Flask(__name__)
 CORS(app)
 
-# Banco de dados Supabase
+# Banco Supabase
 DB_HOST = "db.fvnyxxcicytfetikqkxe.supabase.co"
 DB_NAME = "postgres"
 DB_USER = "postgres"
 DB_PASS = "UmbreonPay2026!@#X9JNFDYHCFIJVD57HD6UJFTIIBFY7JBFYUIHF"
 DB_PORT = "5432"
 
-def conectar():
-    return psycopg2.connect(
-        host=DB_HOST, database=DB_NAME,
-        user=DB_USER, password=DB_PASS, port=DB_PORT
-    )
+monero = MoneroService()
 
-def iniciar_banco():
-    conn = conectar()
-    c = conn.cursor()
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS clientes (
-            id TEXT PRIMARY KEY,
-            nome TEXT, cpf TEXT UNIQUE, email TEXT UNIQUE,
-            senha_hash TEXT, saldo_brl REAL DEFAULT 0,
-            saldo_xmr REAL DEFAULT 0, nivel TEXT DEFAULT 'Sombra',
-            codigo_afiliado TEXT UNIQUE,
-            criado_em TIMESTAMP DEFAULT NOW()
-        );
-        CREATE TABLE IF NOT EXISTS transacoes (
-            id SERIAL PRIMARY KEY,
-            cliente_id TEXT, tipo TEXT, valor REAL, taxa REAL,
-            descricao TEXT, data TIMESTAMP DEFAULT NOW()
-        );
-        CREATE TABLE IF NOT EXISTS metas (
-            id SERIAL PRIMARY KEY,
-            cliente_id TEXT, nome TEXT, valor_meta REAL, valor_atual REAL DEFAULT 0
-        );
-        CREATE TABLE IF NOT EXISTS vault (
-            id SERIAL PRIMARY KEY,
-            cliente_id TEXT, valor REAL, tempo_espera INTEGER,
-            solic_data TIMESTAMP DEFAULT NOW(), status TEXT DEFAULT 'ativo'
-        );
-    """)
-    conn.commit()
-    conn.close()
-    print("✅ Banco iniciado!")
+def conectar():
+    return psycopg2.connect(host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASS, port=DB_PORT)
 
 # ═══════════════════════════════════════
 # AUTENTICAÇÃO
@@ -84,7 +53,6 @@ def cadastrar():
         conn.close()
         return jsonify({"ok":True,"mensagem":"Conta criada com sucesso!","codigo_afiliado":codigo})
     except psycopg2.errors.UniqueViolation:
-        conn.close()
         return jsonify({"erro":"CPF ou email já cadastrado"}),400
     except Exception as e:
         return jsonify({"erro":str(e)}),500
@@ -94,14 +62,12 @@ def login():
     data = request.json
     cpf = data.get('cpf','')
     senha = hashlib.sha256(data.get('senha','').encode()).hexdigest()
-
     try:
         conn = conectar()
         c = conn.cursor()
         c.execute("SELECT nome,saldo_brl,saldo_xmr,nivel,codigo_afiliado FROM clientes WHERE cpf=%s AND senha_hash=%s",(cpf,senha))
         r = c.fetchone()
         conn.close()
-
         if r:
             return jsonify({"ok":True,"nome":r[0],"saldo_brl":float(r[1]),"saldo_xmr":float(r[2]),"nivel":r[3],"codigo_afiliado":r[4]})
         return jsonify({"erro":"CPF ou senha incorretos"}),401
@@ -131,7 +97,7 @@ def pix_enviar():
              (cpf,'pix_enviado',valor,taxa,f'Pix enviado: R$ {valor:.2f}'))
     conn.commit()
     conn.close()
-    return jsonify({"ok":True,"mensagem":f"Pix de R$ {valor:.2f} enviado!"})
+    return jsonify({"ok":True,"mensagem":f"Pix de R$ {valor:.2f} enviado!","taxa":taxa})
 
 @app.route('/api/deposito', methods=['POST'])
 def deposito():
@@ -148,7 +114,7 @@ def deposito():
              (cpf,'deposito',valor,taxa,f'Depósito: R$ {valor:.2f}'))
     conn.commit()
     conn.close()
-    return jsonify({"ok":True,"mensagem":f"Depósito de R$ {valor:.2f} recebido!"})
+    return jsonify({"ok":True,"mensagem":f"Depósito de R$ {valor:.2f} recebido!","taxa":taxa,"liquido":liquido})
 
 @app.route('/api/saque', methods=['POST'])
 def saque():
@@ -170,7 +136,7 @@ def saque():
              (cpf,'saque',valor,taxa,f'Saque: R$ {valor:.2f}'))
     conn.commit()
     conn.close()
-    return jsonify({"ok":True,"mensagem":f"Saque de R$ {valor:.2f} realizado!"})
+    return jsonify({"ok":True,"mensagem":f"Saque de R$ {valor:.2f} realizado!","taxa":taxa})
 
 @app.route('/api/extrato', methods=['POST'])
 def extrato():
@@ -185,12 +151,110 @@ def extrato():
     return jsonify({"ok":True,"extrato":ext})
 
 # ═══════════════════════════════════════
-# CRIPTO
+# CRIPTO (MONERO REAL)
 # ═══════════════════════════════════════
 
 @app.route('/api/crypto/cotacao')
 def cotacao():
     return jsonify({"XMR":{"BRL":1200.00,"USD":240.00},"BTC":{"BRL":350000.00,"USD":70000.00}})
+
+@app.route('/api/crypto/carteira', methods=['POST'])
+def criar_carteira():
+    """Cria uma carteira Monero real para o cliente"""
+    data = request.json
+    cpf = data.get('cpf','')
+    resultado = monero.gerar_carteira()
+    return jsonify({"ok":True,"endereco":resultado['endereco'],"seed":resultado['seed']})
+
+@app.route('/api/crypto/saldo', methods=['POST'])
+def saldo_crypto():
+    data = request.json
+    endereco = data.get('endereco','')
+    resultado = monero.consultar_saldo(endereco)
+    return jsonify(resultado)
+
+@app.route('/api/crypto/enviar', methods=['POST'])
+def enviar_crypto():
+    data = request.json
+    origem = data.get('origem','')
+    destino = data.get('destino','')
+    valor = float(data.get('valor',0))
+    resultado = monero.enviar_transacao(origem,destino,valor)
+    return jsonify(resultado)
+
+# ═══════════════════════════════════════
+# METAS
+# ═══════════════════════════════════════
+
+@app.route('/api/metas', methods=['POST'])
+def metas_listar():
+    data = request.json
+    cpf = data.get('cpf','')
+    conn = conectar()
+    c = conn.cursor()
+    c.execute("SELECT id,nome,valor_meta,valor_atual FROM metas WHERE cliente_id=%s",(cpf,))
+    rows = c.fetchall()
+    conn.close()
+    metas = [{"id":r[0],"nome":r[1],"valor_meta":r[2],"valor_atual":r[3]} for r in rows]
+    return jsonify({"ok":True,"metas":metas})
+
+@app.route('/api/metas/criar', methods=['POST'])
+def metas_criar():
+    data = request.json
+    cpf = data.get('cpf','')
+    nome = data.get('nome','')
+    valor = float(data.get('valor',0))
+    conn = conectar()
+    c = conn.cursor()
+    c.execute("INSERT INTO metas (cliente_id,nome,valor_meta) VALUES(%s,%s,%s)",(cpf,nome,valor))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok":True,"mensagem":f"Meta '{nome}' criada!"})
+
+# ═══════════════════════════════════════
+# VAULT
+# ═══════════════════════════════════════
+
+@app.route('/api/vault/depositar', methods=['POST'])
+def vault_depositar():
+    data = request.json
+    cpf = data.get('cpf','')
+    valor = float(data.get('valor',0))
+    horas = int(data.get('horas',72))
+    conn = conectar()
+    c = conn.cursor()
+    c.execute("SELECT saldo_brl FROM clientes WHERE cpf=%s",(cpf,))
+    r = c.fetchone()
+    if not r or r[0] < valor:
+        conn.close()
+        return jsonify({"erro":"Saldo insuficiente"}),400
+    novo = r[0] - valor
+    c.execute("UPDATE clientes SET saldo_brl=%s WHERE cpf=%s",(novo,cpf))
+    c.execute("INSERT INTO vault (cliente_id,valor,tempo_espera) VALUES(%s,%s,%s)",(cpf,valor,horas))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok":True,"mensagem":f"R$ {valor:.2f} depositado no Vault! ({horas}h de espera)"})
+
+# ═══════════════════════════════════════
+# AFILIADOS
+# ═══════════════════════════════════════
+
+@app.route('/api/afiliados/indicar', methods=['POST'])
+def afiliados_indicar():
+    data = request.json
+    cpf = data.get('cpf','')
+    codigo = data.get('codigo','')
+    conn = conectar()
+    c = conn.cursor()
+    c.execute("SELECT id FROM clientes WHERE codigo_afiliado=%s",(codigo,))
+    r = c.fetchone()
+    if r:
+        c.execute("UPDATE clientes SET saldo_brl = saldo_brl + 50 WHERE id=%s",(r[0],))
+        conn.commit()
+        conn.close()
+        return jsonify({"ok":True,"mensagem":"Indicação registrada! R$ 50 creditados."})
+    conn.close()
+    return jsonify({"erro":"Código inválido"}),404
 
 # ═══════════════════════════════════════
 # SISTEMA
@@ -198,8 +262,7 @@ def cotacao():
 
 @app.route('/')
 def home():
-    return jsonify({"app":"UmbreonPay API","versao":"2.0","banco":"PostgreSQL (Supabase)","status":"online"})
+    return jsonify({"app":"UmbreonPay API","versao":"3.0","banco":"PostgreSQL","cripto":"Monero RPC","status":"online"})
 
 if __name__ == '__main__':
-    iniciar_banco()
     app.run(host='0.0.0.0', port=8080)
