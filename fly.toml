@@ -1,0 +1,13 @@
+app = "umbreonpay"
+
+[build]
+  builder = "paketobuildpacks/builder:base"
+
+[[services]]
+  internal_port = 8080
+  protocol = "tcp"
+  auto_stop_machines = false
+  auto_start_machines = true
+
+[env]
+  DB_PATH = "/data/umbreonpay.db"
