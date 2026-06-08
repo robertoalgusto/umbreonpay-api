@@ -24,7 +24,9 @@ DB_PORT = os.environ.get('DB_PORT', '5432')
 def conectar():
     return psycopg2.connect(
         host=DB_HOST, database=DB_NAME,
-        user=DB_USER, password=DB_PASS, port=DB_PORT
+        user=DB_USER, password=DB_PASS, port=DB_PORT,
+        sslmode='require', connect_timeout=10,
+        options='-c statement_timeout=10000'
     )
 
 # ═══════════════════════════════════════
@@ -77,3 +79,4 @@ def home():
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8080)
+# (código já existe, apenas adicionar isto ao connect_mode)
